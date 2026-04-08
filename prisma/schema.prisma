@@ -1,0 +1,746 @@
+// ============================================
+// G-NEX Platform - Prisma Schema
+// B2B Cost Reduction Matching Platform
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// 1. AUTHENTICATION & USERS
+// ============================================
+
+/// ユーザーロール
+enum UserRole {
+  CLIENT         // 発注者（建物オーナー・管理者）
+  CONTRACTOR     // 受注者（通常 - 専門業者）
+  LEAD_BUYER     // 受注者（リード購入型 - 士業・金融・産廃）
+  ADMIN          // 運営者（管理者）
+}
+
+/// アカウントステータス
+enum AccountStatus {
+  PENDING_VERIFICATION // メール認証待ち
+  PENDING_APPROVAL     // 運営者の審査待ち（受注者向け）
+  ACTIVE               // 有効
+  SUSPENDED            // 凍結
+}
+
+/// リード購入者の業種カテゴリ
+enum LeadBuyerCategory {
+  LEGAL    // 士業（行政書士・中小企業診断士等）
+  FINANCE  // 金融・リース会社（地方銀行・信用金庫・中堅リース会社）
+  WASTE    // 産廃業者（有価物買取業者）
+}
+
+/// 全ユーザー共通テーブル - メールアドレス＋パスワード認証
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  passwordHash   String        @map("password_hash")
+  role           UserRole
+  status         AccountStatus @default(PENDING_VERIFICATION)
+  emailVerified  DateTime?     @map("email_verified")
+  lastLoginAt    DateTime?     @map("last_login_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  // Role-specific profiles (exactly one will be populated)
+  clientProfile     ClientProfile?
+  contractorProfile ContractorProfile?
+  leadBuyerProfile  LeadBuyerProfile?
+
+  // Relations
+  projects          Project[]          @relation("ProjectOwner")
+  proposals         Proposal[]
+  sentMessages      Message[]          @relation("MessageSender")
+  receivedMessages  Message[]          @relation("MessageReceiver")
+  notifications     Notification[]
+  leadPurchases     LeadPurchase[]
+  calendarEvents    CalendarEvent[]
+  electricityBills  ElectricityBill[]
+  reviews           Review[]           @relation("ReviewAuthor")
+  reviewsReceived   Review[]           @relation("ReviewTarget")
+  passwordResets    PasswordReset[]
+  simulatorResults  SimulatorResult[]
+
+  @@index([role, status])
+  @@index([email])
+  @@map("users")
+}
+
+/// パスワードリセットトークン - 完全自動化対応
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("password_resets")
+}
+
+// ============================================
+// 2. USER PROFILES (Role-Specific)
+// ============================================
+
+/// 発注者プロフィール - 企業名・担当者名・連絡先・建物種別
+model ClientProfile {
+  id            String       @id @default(cuid())
+  userId        String       @unique @map("user_id")
+  companyName   String?      @map("company_name")
+  contactName   String       @map("contact_name")
+  phone         String?
+  buildingType  BuildingType @map("building_type")
+  prefecture    String?      // 都道府県
+  city          String?      // 市区町村
+  address       String?      // 詳細住所
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("client_profiles")
+}
+
+/// 受注者プロフィール（通常） - 企業情報・対応Unit・対応エリア・実績・資格
+model ContractorProfile {
+  id              String   @id @default(cuid())
+  userId          String   @unique @map("user_id")
+  companyName     String   @map("company_name")
+  contactName     String   @map("contact_name")
+  phone           String?
+  description     String?  @db.Text // 企業紹介文
+  serviceUnits    ServiceUnit[] @map("service_units") // 対応Unit（A〜D、複数可）
+  serviceAreas    String[]      @map("service_areas") // 対応エリア（都道府県コード）
+  completedCount  Int      @default(0) @map("completed_count") // 実績件数
+  approvedAt      DateTime? @map("approved_at") // 運営者承認日時
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user          User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  certifications ContractorCertification[]
+
+  @@map("contractor_profiles")
+}
+
+/// 受注者の資格・認定証
+model ContractorCertification {
+  id                  String  @id @default(cuid())
+  contractorProfileId String  @map("contractor_profile_id")
+  name                String  // 資格名
+  fileUrl             String  @map("file_url") // S3 URL
+  fileKey             String  @map("file_key") // S3 key
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  contractorProfile ContractorProfile @relation(fields: [contractorProfileId], references: [id], onDelete: Cascade)
+
+  @@map("contractor_certifications")
+}
+
+/// リード購入型受注者プロフィール - 士業/金融/産廃の属性管理
+model LeadBuyerProfile {
+  id            String            @id @default(cuid())
+  userId        String            @unique @map("user_id")
+  companyName   String            @map("company_name")
+  contactName   String            @map("contact_name")
+  phone         String?
+  category      LeadBuyerCategory // 士業 / 金融・リース / 産廃
+  serviceAreas  String[]          @map("service_areas") // 対応エリア
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("lead_buyer_profiles")
+}
+
+// ============================================
+// 3. PROJECT / 案件
+// ============================================
+
+/// 建物種別
+enum BuildingType {
+  FACTORY_WAREHOUSE  // 工場・倉庫【最重要】
+  HOSPITAL_CARE      // 病院・介護施設【最重要】
+  STORE_COMMERCIAL   // 店舗・商業施設
+  HOTEL_RYOKAN       // ホテル・旅館
+  BUILDING_MANSION   // ビル・マンション
+  OTHER              // その他施設
+}
+
+/// サービスUnit（4カテゴリー）
+enum ServiceUnit {
+  UNIT_A // 創エネ・蓄エネ（太陽光発電, 蓄電池, ソーラーカーポート）
+  UNIT_B // 省エネ・効率化（LED, 高効率空調, 遮熱, EMS）
+  UNIT_C // モビリティ（EV充電器, V2H）
+  UNIT_D // 運用・循環（産廃, 有価物買取, メンテ, ESCOコンサル）★最重要フック
+}
+
+/// 案件ステータス - ワークフロー管理
+enum ProjectStatus {
+  DRAFT        // 下書き（一時保存）
+  OPEN         // 公開中（受注者の応募受付中）
+  IN_REVIEW    // 見積比較中（発注者が受注者を選定中）
+  IN_PROGRESS  // 進行中（業者選定済み・工事進行中）
+  COMPLETED    // 完了
+  CANCELLED    // キャンセル
+}
+
+/// 依頼種別
+enum RequestType {
+  CONSTRUCTION      // 工事の依頼
+  EXPERT_CONSULT    // 補助金・助成金の相談（専門家への依頼）
+}
+
+/// 案件 - ウィザード形式（Step1〜4）で投稿される案件データ
+model Project {
+  id              String        @id @default(cuid())
+  ownerId         String        @map("owner_id") // 発注者
+  status          ProjectStatus @default(DRAFT)
+  serviceUnit     ServiceUnit   @map("service_unit") // Step1: カテゴリー選択
+  requestType     RequestType   @default(CONSTRUCTION) @map("request_type")
+
+  // Step2: 建物・所在地・予算
+  buildingType    BuildingType  @map("building_type")
+  prefecture      String?       // 都道府県
+  city            String?       // 市区町村
+  address         String?       // 詳細住所（非公開案件では伏せる）
+  budgetMin       Int?          @map("budget_min") // 予算目安（下限・万円）
+  budgetMax       Int?          @map("budget_max") // 予算目安（上限・万円）
+  description     String?       @db.Text // 依頼内容詳細
+
+  // Dynamic form responses (Step2 追加項目 - マスタ管理のフォームへの回答)
+  formResponses   Json?         @map("form_responses")
+
+  // 公開設定
+  isPrivate       Boolean       @default(false) @map("is_private")       // 案件を非公開にする
+  isPhotoPrivate  Boolean       @default(false) @map("is_photo_private") // 写真を非公開にする
+
+  // リード課金フラグ - チェックが入った案件は「リード販売対象案件」
+  leadSubsidy     Boolean       @default(false) @map("lead_subsidy")    // 補助金・助成金の活用相談を希望
+  leadFinance     Boolean       @default(false) @map("lead_finance")    // 初期費用0円での導入を希望
+  leadWaste       Boolean       @default(false) @map("lead_waste")      // 廃棄・有価物買取を希望
+  isLeadTarget    Boolean       @default(false) @map("is_lead_target")  // リード販売対象フラグ（上記いずれかONで自動ON）
+
+  // 受注者選定
+  selectedProposalId String?    @unique @map("selected_proposal_id")
+
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  completedAt     DateTime?     @map("completed_at")
+
+  // Relations
+  owner             User            @relation("ProjectOwner", fields: [ownerId], references: [id])
+  selectedProposal  Proposal?       @relation("SelectedProposal", fields: [selectedProposalId], references: [id])
+  files             ProjectFile[]
+  proposals         Proposal[]      @relation("ProjectProposals")
+  leadPurchases     LeadPurchase[]
+  reviews           Review[]
+  conversations     Conversation[]
+
+  @@index([ownerId])
+  @@index([status])
+  @@index([serviceUnit])
+  @@index([buildingType])
+  @@index([isLeadTarget])
+  @@index([prefecture, serviceUnit])
+  @@index([createdAt])
+  @@map("projects")
+}
+
+/// 案件に紐づくファイル（写真・図面） - S3参照
+model ProjectFile {
+  id          String   @id @default(cuid())
+  projectId   String   @map("project_id")
+  fileName    String   @map("file_name")
+  fileUrl     String   @map("file_url")     // S3 URL
+  fileKey     String   @map("file_key")     // S3 key（ライフサイクル管理用）
+  fileSize    Int      @map("file_size")    // bytes
+  mimeType    String   @map("mime_type")
+  category    String?                       // 写真撮影ガイドの項目IDとの紐付け
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_files")
+}
+
+// ============================================
+// 4. PROPOSALS / 見積・応募
+// ============================================
+
+/// 見積ステータス
+enum ProposalStatus {
+  SUBMITTED   // 提出済み
+  SHORTLISTED // 比較対象に選出
+  SELECTED    // 選定済み（受注確定）
+  REJECTED    // 不採用
+  WITHDRAWN   // 取り下げ
+}
+
+/// 受注者からの見積提出 - ブラインド比較用（プランA/B/C表示）
+model Proposal {
+  id              String         @id @default(cuid())
+  projectId       String         @map("project_id")
+  contractorId    String         @map("contractor_id")
+  status          ProposalStatus @default(SUBMITTED)
+
+  // 見積内容
+  content         String         @db.Text // 提案内容（メーカー名・施工法など）
+  priceMin        Int?           @map("price_min")  // 概算見積（下限・円） - レンジ対応
+  priceMax        Int?           @map("price_max")  // 概算見積（上限・円）
+  cannotEstimate  String?        @map("cannot_estimate") @db.Text // 概算見積不可項目の説明
+  estimatedDays   Int?           @map("estimated_days") // 概算工期（日）
+
+  // ブラインド表示用ラベル（自動割当: プランA, プランB, ...）
+  blindLabel      String?        @map("blind_label")
+
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  project    Project @relation("ProjectProposals", fields: [projectId], references: [id], onDelete: Cascade)
+  contractor User   @relation(fields: [contractorId], references: [id])
+  selected   Project? @relation("SelectedProposal")
+
+  @@unique([projectId, contractorId]) // 1案件につき1受注者1提案
+  @@index([projectId])
+  @@index([contractorId])
+  @@map("proposals")
+}
+
+// ============================================
+// 5. MESSAGING
+// ============================================
+
+/// 会話スレッド（案件ごと or ダイレクト）
+model Conversation {
+  id          String    @id @default(cuid())
+  projectId   String?   @map("project_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  messages    Message[]
+  participants ConversationParticipant[]
+
+  @@index([projectId])
+  @@map("conversations")
+}
+
+/// 会話の参加者
+model ConversationParticipant {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  userId         String   @map("user_id")
+  lastReadAt     DateTime? @map("last_read_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@map("conversation_participants")
+}
+
+/// メッセージ
+model Message {
+  id             String    @id @default(cuid())
+  conversationId String    @map("conversation_id")
+  senderId       String    @map("sender_id")
+  receiverId     String?   @map("receiver_id")
+  content        String    @db.Text
+  isRead         Boolean   @default(false) @map("is_read")
+  attachmentUrl  String?   @map("attachment_url")  // S3 URL
+  attachmentKey  String?   @map("attachment_key")  // S3 key
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User         @relation("MessageSender", fields: [senderId], references: [id])
+  receiver     User?        @relation("MessageReceiver", fields: [receiverId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@index([receiverId])
+  @@map("messages")
+}
+
+// ============================================
+// 6. LEAD SYSTEM / リード課金
+// ============================================
+
+/// リード種別（発注者がチェックしたニーズの種類）
+enum LeadType {
+  SUBSIDY  // 補助金ニーズ → 対象：士業
+  FINANCE  // 融資・リース・PPAニーズ → 対象：金融
+  WASTE    // 産廃診断ニーズ → 対象：有価物買取業者
+}
+
+/// リード単価設定 - 管理者がカテゴリーごとに変更可能
+model LeadPricing {
+  id          String    @id @default(cuid())
+  leadType    LeadType  @unique @map("lead_type")
+  priceYen    Int       @map("price_yen") // 単価（円） 例: 15000, 10000
+  isActive    Boolean   @default(true) @map("is_active")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedBy   String?   @map("updated_by") // 最終更新した管理者ID
+
+  @@map("lead_pricing")
+}
+
+/// リード購入記録 - Stripe都度決済後に発注者の連絡先を開示
+model LeadPurchase {
+  id                String   @id @default(cuid())
+  buyerId           String   @map("buyer_id")     // リード購入者（LEAD_BUYER）
+  projectId         String   @map("project_id")   // 対象案件
+  leadType          LeadType @map("lead_type")
+  priceYen          Int      @map("price_yen")    // 購入時の単価（スナップショット）
+
+  // Stripe決済情報
+  stripeSessionId   String?  @map("stripe_session_id")
+  stripePaymentId   String?  @map("stripe_payment_id")
+  paidAt            DateTime? @map("paid_at")
+
+  // 連絡先開示済みフラグ
+  contactRevealed   Boolean  @default(false) @map("contact_revealed")
+
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  buyer   User    @relation(fields: [buyerId], references: [id])
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([buyerId, projectId, leadType]) // 同一案件の同一種別は1回のみ購入可能
+  @@index([buyerId])
+  @@index([projectId])
+  @@index([paidAt])
+  @@map("lead_purchases")
+}
+
+// ============================================
+// 7. REVIEWS / 評価・レビュー
+// ============================================
+
+/// 評価・レビュー（案件完了後に発注者→受注者）
+model Review {
+  id          String   @id @default(cuid())
+  projectId   String   @map("project_id")
+  authorId    String   @map("author_id")   // レビュー投稿者（発注者）
+  targetId    String   @map("target_id")   // レビュー対象（受注者）
+  rating      Int                          // 1〜5
+  comment     String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+  author  User    @relation("ReviewAuthor", fields: [authorId], references: [id])
+  target  User    @relation("ReviewTarget", fields: [targetId], references: [id])
+
+  @@unique([projectId, authorId]) // 1案件1レビュー
+  @@index([targetId])
+  @@map("reviews")
+}
+
+// ============================================
+// 8. SIMULATOR / シミュレーター
+// ============================================
+
+/// シミュレーター計算パターン
+enum SimulatorPattern {
+  PATTERN_A // 規模・数量ベース（Unit A太陽光, Unit C EV充電 等）
+  PATTERN_B // 現状コストベース（Unit B空調LED, Unit D産廃 等）
+}
+
+/// シミュレーター変数設定 - CMS管理画面から6つの変数を設定
+/// カテゴリーごとに1レコード、将来の商材追加にも対応
+model SimulatorConfig {
+  id            String           @id @default(cuid())
+  name          String           // 表示名（例: "太陽光発電", "高効率空調・LED"）
+  slug          String           @unique // URL用スラッグ
+  serviceUnit   ServiceUnit      @map("service_unit")
+  pattern       SimulatorPattern
+  isActive      Boolean          @default(true) @map("is_active")
+  sortOrder     Int              @default(0) @map("sort_order")
+
+  // ユーザー入力の説明
+  inputLabel    String           @map("input_label")  // 例: "屋根の広さ（平米）"
+  inputUnit     String           @map("input_unit")   // 例: "㎡", "台", "円"
+
+  // 6つの変数 - パターンA/Bで意味が異なる（コメントはrequirements参照）
+  variable1     Float            // パターンA: 規模換算係数 / パターンB: 年間換算係数
+  variable2     Float            // パターンA: 投資単価 / パターンB: 投資額倍率
+  variable3     Float            // 補助率
+  variable4     Float            // 補助金上限額
+  variable5     Float            // パターンA: 年間削減単価 / パターンB: コスト削減率
+  variable6     Float            // パターンA: CO2削減単価 / パターンB: CO2換算係数
+
+  // 変数のラベル（管理画面表示用）
+  variable1Label String?         @map("variable1_label")
+  variable2Label String?         @map("variable2_label")
+  variable3Label String?         @map("variable3_label")
+  variable4Label String?         @map("variable4_label")
+  variable5Label String?         @map("variable5_label")
+  variable6Label String?         @map("variable6_label")
+
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  results SimulatorResult[]
+
+  @@index([serviceUnit])
+  @@map("simulator_configs")
+}
+
+/// シミュレーション実行結果の保存
+model SimulatorResult {
+  id               String   @id @default(cuid())
+  configId         String   @map("config_id")
+  userId           String?  @map("user_id") // ログインユーザーのみ保存
+  inputValue       Float    @map("input_value")
+
+  // 計算結果
+  baseScale        Float    @map("base_scale")        // 基準規模 or 年間コスト
+  estimatedCost    Float    @map("estimated_cost")    // 概算投資額
+  subsidyAmount    Float    @map("subsidy_amount")    // 補助金概算
+  annualSaving     Float    @map("annual_saving")     // 年間削減額
+  paybackYears     Float?   @map("payback_years")     // 投資回収年数（0除算時null）
+  co2Reduction     Float    @map("co2_reduction")     // 年間CO2削減量
+
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  config SimulatorConfig @relation(fields: [configId], references: [id])
+  user   User?          @relation(fields: [userId], references: [id])
+
+  @@index([configId])
+  @@index([userId])
+  @@map("simulator_results")
+}
+
+// ============================================
+// 9. CMS / コンテンツ管理
+// ============================================
+
+/// CMSページ種別
+enum CmsPageType {
+  BUILDING_LP  // 建物別LP（Type A: PASONAの法則レイアウト）
+  UNIT_LP      // 課題別LP（Type B: カタログ型レイアウト）
+  BLOG         // ブログ記事
+  GENERAL      // その他ページ
+}
+
+/// CMSページ公開ステータス
+enum CmsPageStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// CMSページ - LP・ブログ・下層ページのコンテンツ管理
+model CmsPage {
+  id              String        @id @default(cuid())
+  pageType        CmsPageType   @map("page_type")
+  status          CmsPageStatus @default(DRAFT)
+  slug            String        @unique // URLスラッグ
+  title           String        // ページタイトル
+
+  // SEO
+  metaTitle       String?       @map("meta_title")       // titleタグ
+  metaDescription String?       @map("meta_description") // descriptionタグ
+
+  // ヒーローエリア（FV）
+  heroImageUrl    String?       @map("hero_image_url")   // 背景画像 S3 URL
+  heroImageKey    String?       @map("hero_image_key")
+  heroCatchcopy   String?       @map("hero_catchcopy")   // キャッチコピー
+  heroSubcopy     String?       @map("hero_subcopy")     // サブコピー
+
+  // 機能連携
+  showSimulatorWaste  Boolean   @default(false) @map("show_simulator_waste")  // 産廃コスト診断表示
+  showSimulatorEnergy Boolean   @default(false) @map("show_simulator_energy") // 再エネ診断表示
+
+  // 関連付け
+  buildingType    BuildingType? @map("building_type") // 建物別LPの場合
+  serviceUnit     ServiceUnit?  @map("service_unit")  // 課題別LPの場合
+
+  publishedAt     DateTime?     @map("published_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  blocks CmsBlock[]
+
+  @@index([pageType, status])
+  @@index([slug])
+  @@map("cms_pages")
+}
+
+/// CMSコンテンツブロック - ブロック積み上げ式
+model CmsBlock {
+  id          String   @id @default(cuid())
+  pageId      String   @map("page_id")
+  blockType   String   @map("block_type") // "pain_list", "solution", "case_study", "faq", "text", "image_text"
+  content     Json     // ブロック種別ごとのJSON構造
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  page CmsPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, sortOrder])
+  @@map("cms_blocks")
+}
+
+// ============================================
+// 10. DYNAMIC FORM / 動的フォーム管理
+// ============================================
+
+/// フォーム入力フィールドの型
+enum FormFieldType {
+  TEXT
+  TEXTAREA
+  SELECT
+  MULTI_SELECT
+  RADIO
+  CHECKBOX
+  NUMBER
+  PHOTO        // 写真アップロード
+}
+
+/// 動的フォーム項目 - カテゴリーごとにフォーム項目を管理画面から設定
+model FormField {
+  id           String        @id @default(cuid())
+  serviceUnit  ServiceUnit   @map("service_unit") // 対象Unit
+  fieldType    FormFieldType @map("field_type")
+  label        String        // 質問文
+  placeholder  String?
+  isRequired   Boolean       @default(false) @map("is_required")
+  options      Json?         // SELECT/RADIO/CHECKBOXの選択肢 ["選択肢A", "選択肢B"]
+  sortOrder    Int           @default(0) @map("sort_order")
+  isActive     Boolean       @default(true) @map("is_active")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  @@index([serviceUnit, sortOrder])
+  @@map("form_fields")
+}
+
+// ============================================
+// 11. PHOTO GUIDE / 写真撮影ガイド
+// ============================================
+
+/// 写真撮影ガイド - カテゴリーごとに「撮影してほしい写真項目」をCMSから設定
+model PhotoGuide {
+  id             String      @id @default(cuid())
+  serviceUnit    ServiceUnit @map("service_unit")
+  title          String      // 写真タイトル（例: "屋根全体の写真"）
+  isRequired     Boolean     @default(false) @map("is_required")
+  guideText      String?     @map("guide_text") @db.Text  // 撮影ガイドテキスト
+  guideImageUrl  String?     @map("guide_image_url")      // ガイド画像（良い例・悪い例）S3 URL
+  guideImageKey  String?     @map("guide_image_key")
+  sortOrder      Int         @default(0) @map("sort_order")
+  isActive       Boolean     @default(true) @map("is_active")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@index([serviceUnit, sortOrder])
+  @@map("photo_guides")
+}
+
+// ============================================
+// 12. CALENDAR / スケジュール管理
+// ============================================
+
+/// カレンダーイベント種別
+enum CalendarEventType {
+  AVAILABLE      // 対応可能日（受注者）
+  MEETING        // 打ち合わせ
+  CONSTRUCTION   // 工事日程
+  INSPECTION     // 現地調査
+  OTHER
+}
+
+/// カレンダーイベント
+model CalendarEvent {
+  id          String             @id @default(cuid())
+  userId      String             @map("user_id")
+  projectId   String?            @map("project_id")
+  eventType   CalendarEventType  @map("event_type")
+  title       String
+  description String?            @db.Text
+  startAt     DateTime           @map("start_at")
+  endAt       DateTime           @map("end_at")
+  isAllDay    Boolean            @default(false) @map("is_all_day")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startAt])
+  @@index([projectId])
+  @@map("calendar_events")
+}
+
+// ============================================
+// 13. ELECTRICITY BILLS / 電気料金データ
+// ============================================
+
+/// 月別電気料金 - ダッシュボードの棒グラフ・円グラフ用
+model ElectricityBill {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  year        Int
+  month       Int      // 1-12
+  amountYen   Int      @map("amount_yen") // 電気料金（円）
+  usageKwh    Float?   @map("usage_kwh")  // 使用量（kWh）
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month])
+  @@index([userId])
+  @@map("electricity_bills")
+}
+
+// ============================================
+// 14. NOTIFICATIONS / 通知
+// ============================================
+
+/// 通知種別
+enum NotificationType {
+  PROJECT_NEW_PROPOSAL  // 新しい見積が届いた
+  PROJECT_SELECTED      // 業者として選定された
+  PROJECT_STATUS_CHANGE // 案件ステータス変更
+  LEAD_AVAILABLE        // リード案件が発生（リード購入者向け通知）
+  LEAD_PURCHASED        // リードが購入された（管理者向け）
+  MESSAGE_NEW           // 新着メッセージ
+  REVIEW_RECEIVED       // レビューが投稿された
+  ACCOUNT_APPROVED      // アカウント承認完了
+  PRIVATE_PROJECT       // 非公開案件の通知（管理者向け）
+  SYSTEM                // システム通知
+}
+
+/// 通知
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String           @map("user_id")
+  type        NotificationType
+  title       String
+  message     String           @db.Text
+  linkUrl     String?          @map("link_url") // 関連ページへのリンク
+  isRead      Boolean          @default(false) @map("is_read")
+  metadata    Json?            // 追加データ（案件ID, 送信者ID等）
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}

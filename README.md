@@ -1,36 +1,81 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# G-NEX - コスト削減マッチングプラットフォーム
+
+建物オーナー・管理者と、エネルギー・産廃関連の専門業者をつなぐBtoBマッチングプラットフォーム。
+
+## Tech Stack
+
+- **Framework:** Next.js 14 (App Router)
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS + shadcn/ui
+- **Database:** PostgreSQL (Supabase)
+- **Storage:** Amazon S3
+- **Payment:** Stripe
+- **Linting:** ESLint + Prettier
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+# Install dependencies
+npm install
+
+# Copy environment variables
+cp .env.example .env.local
+
+# Start development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+src/
+├── app/
+│   ├── (auth)/          # Authentication pages (login, register, forgot-password)
+│   ├── (dashboard)/     # Dashboard pages by user role
+│   │   ├── client/      # Client (発注者) dashboard
+│   │   ├── contractor/  # Contractor (受注者) dashboard
+│   │   └── admin/       # Admin (運営者) dashboard
+│   ├── (marketing)/     # Public pages (LP, simulator, blog)
+│   └── api/             # API routes
+│       ├── auth/        # Authentication
+│       ├── projects/    # Project CRUD
+│       ├── leads/       # Lead management
+│       ├── messages/    # Messaging
+│       ├── simulator/   # Simulator calculations
+│       ├── upload/      # File upload (S3)
+│       └── stripe/      # Payment webhooks
+├── components/
+│   ├── ui/              # shadcn/ui components
+│   ├── layout/          # Header, Footer, Sidebar
+│   ├── forms/           # Form components (wizard, upload)
+│   ├── dashboard/       # Dashboard widgets
+│   ├── simulator/       # Simulator components
+│   └── marketing/       # LP sections
+├── lib/                 # Utility functions
+├── hooks/               # Custom React hooks
+├── types/               # TypeScript type definitions
+├── config/              # App constants and configuration
+└── styles/              # Additional styles
+```
 
-## Learn More
+## Service Categories (4 Units)
 
-To learn more about Next.js, take a look at the following resources:
+| Unit | Category | Description |
+|------|----------|-------------|
+| A | 創エネ・蓄エネ | Solar, batteries, carports |
+| B | 省エネ・効率化 | LED, HVAC, insulation, EMS |
+| C | モビリティ | EV chargers, V2H |
+| D | 運用・循環 | Waste management, recycling |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Scripts
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run dev          # Start development server
+npm run build        # Build for production
+npm run start        # Start production server
+npm run lint         # Run ESLint
+npm run format       # Format code with Prettier
+npm run format:check # Check formatting
+```
